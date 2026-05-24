@@ -22,11 +22,17 @@ def register_tools(app):
         data = await _client.get(f"/accounts/{account_id}/info")
         if isinstance(data, list) and data:
             data = data[0]
+        # Nordnet has used both *_acc keys and plain keys here. The current
+        # public API returns plain keys (`account_sum`, `trading_power`, ...),
+        # while older docs/tests used accumulated `*_acc` variants.
+        account_sum = data.get("account_sum") or data.get("account_sum_acc") or {}
+        buying_power = data.get("trading_power") or data.get("buying_power_acc") or {}
+        collateral = data.get("collateral") or data.get("collateral_acc") or {}
         info = {
-            "total_value": data.get("account_sum_acc", {}).get("value"),
-            "currency": data.get("account_sum_acc", {}).get("currency"),
-            "buying_power": data.get("buying_power_acc", {}).get("value"),
-            "collateral": data.get("collateral_acc", {}).get("value"),
+            "total_value": account_sum.get("value"),
+            "currency": account_sum.get("currency"),
+            "buying_power": buying_power.get("value"),
+            "collateral": collateral.get("value"),
             "interest": data.get("interest", {}).get("value"),
         }
         info = {k: v for k, v in info.items() if v is not None}
