@@ -30,6 +30,13 @@ MOCK_ACCOUNT_INFO = [{
     "interest": {"value": 0.0},
 }]
 
+MOCK_CURRENT_ACCOUNT_INFO = [{
+    "account_sum": {"value": 159292.71, "currency": "NOK"},
+    "collateral": {"value": 0.0, "currency": "NOK"},
+    "trading_power": {"value": 159292.71, "currency": "NOK"},
+    "interest": {"value": 0.0},
+}]
+
 
 @pytest.fixture
 def mock_client():
@@ -82,3 +89,15 @@ async def test_get_account_info(mock_client, app):
     content, _meta = result
     data = json.loads(content[0].text)
     assert data["buying_power"] == 45200.0
+
+@pytest.mark.asyncio
+async def test_get_account_info_current_plain_keys(mock_client, app):
+    mock_client.get.return_value = MOCK_CURRENT_ACCOUNT_INFO
+
+    result = await app.call_tool("get_account_info", {"account_id": 6})
+    content, _meta = result
+    data = json.loads(content[0].text)
+    assert data["total_value"] == 159292.71
+    assert data["buying_power"] == 159292.71
+    assert data["currency"] == "NOK"
+    assert data["collateral"] == 0.0
