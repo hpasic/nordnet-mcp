@@ -100,3 +100,4 @@ async def test_get_account_info_current_plain_keys(mock_client, app):
     assert data["total_value"] == 159292.71
     assert data["buying_power"] == 159292.71
     assert data["currency"] == "NOK"
+    assert data["collateral"] == 0.0
