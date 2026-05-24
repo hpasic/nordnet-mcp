@@ -115,6 +115,24 @@ If your `.env` is not in the repo root, export the variables in your shell befor
 }
 ```
 
+### Claude Desktop / generic stdio MCP clients (Docker)
+
+```json
+{
+  "mcpServers": {
+    "nordnet": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "-e", "NORDNET_SESSION_TOKEN=your_token_here",
+        "-e", "NORDNET_HOST=public.nordnet.se",
+        "ghcr.io/hpasic/nordnet-mcp:latest"
+      ]
+    }
+  }
+}
+```
+
 Notes:
 - Replace `/absolute/path/to/nordnet-mcp` with your local clone path.
 - Supplying credentials through the MCP client's `env` block is often the easiest option.
