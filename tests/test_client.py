@@ -20,6 +20,8 @@ def test_auth_header():
     expected = base64.b64encode(b"test_token:test_token").decode()
     headers = client._auth_header()
     assert headers["Authorization"] == f"Basic {expected}"
+    # Confirmed live: requests without this get a 401 regardless of token validity.
+    assert headers["client-id"] == "NEXT"
 
 
 @respx.mock
@@ -56,8 +58,7 @@ async def test_get_401_raises_session_expired(client):
 
     message = str(exc_info.value)
     assert "Session expired" in message
-    assert "Application/Storage → Cookies" in message
-    assert "NNX_SESSION_ID" in message
+    assert "nordnet_auth" in message
 
 
 @respx.mock

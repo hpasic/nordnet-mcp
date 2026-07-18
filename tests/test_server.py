@@ -44,10 +44,17 @@ async def test_create_app_registers_all_tools(mock_env):
     assert "get_instrument_types" in tool_names
     assert "get_search_attributes" in tool_names
 
-    assert len(tool_names) == 14
+    # Login (2)
+    assert "nordnet_auth" in tool_names
+    assert "nordnet_login_poll" in tool_names
+
+    assert len(tool_names) == 16
 
 
-def test_create_app_no_token_raises():
+def test_create_app_no_token_does_not_raise():
+    # The server must be able to start without a token, since the QR login
+    # flow is how it obtains one in the first place.
     with patch.dict(os.environ, {}, clear=True):
-        with pytest.raises(ValueError, match="No session token"):
-            create_app()
+        app = create_app()
+
+    assert app is not None

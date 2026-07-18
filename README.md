@@ -6,20 +6,57 @@ It exposes Nordnet accounts, positions, trades, balances, and instrument lookup/
 
 Important:
 - This project is unofficial and is not affiliated with, endorsed by, or supported by Nordnet.
-- It uses your existing Nordnet browser session token.
-- The token is short-lived and typically expires after a couple of hours.
+- It uses your existing Nordnet session, established either via QR login (below) or a browser session token.
+- Nordnet sessions are short-lived (a couple of hours) if left idle — but the server
+  keeps its session alive on its own for as long as it keeps running (see Status).
 - Never commit your token or share your `.env` file.
 
 ## Status
 
-This project is intended for technical users who are comfortable extracting a browser session token manually.
+The server can now log itself in: call the `nordnet_auth` tool (or just try any
+Nordnet tool — a 401 tells the model to call it) and a QR code appears in the
+conversation. Scan it with the Nordnet mobile app and the session is established
+automatically — no browser DevTools, no copy-pasting a cookie. In MCP Apps-capable
+hosts this renders as a live QR image that rotates itself every 100 seconds (up to 3
+codes / 5 minutes) if you haven't scanned it yet, and once approved it disappears and
+sends a follow-up message so you don't have to retype what you originally asked.
+Whether that finishes the loop entirely or just saves you the retyping depends on the
+host: some submit it immediately, others (observed: Claude Desktop) pre-fill it in the
+composer and leave sending it to you — in the latter case, a single Enter is all that's
+left. On hosts without MCP Apps support (e.g. Claude Code), the QR is shown as ASCII
+art text instead of an image, and there's no automatic polling — once you tell the
+model you've scanned and approved it, it calls `nordnet_login_poll` itself to finish
+the login.
 
-Today, the biggest setup friction is authentication, not the MCP server itself.
+A session obtained this way is kept in memory only — applied to the running server
+immediately, but never written to `.env` or anywhere else on disk. If the server
+process restarts for any reason, the token is gone and you'll need to log in again;
+writing it back to `.env` would avoid that, but at a security cost (a bearer token
+sitting in a plaintext file) that isn't worth it unless this turns out to be too
+disruptive in practice — that's the tradeoff to revisit if so.
+If the App view itself gets re-mounted (e.g. reopening a conversation you'd already
+authenticated in), a QR is never shown for a session that's still good — this is
+checked twice, both live against Nordnet (not just "is a token string present," since a
+present-but-dead token shouldn't count): once server-side, before `nordnet_auth` would
+otherwise generate a new order, and once again in the view itself before it ever
+displays whatever content it was handed, since that content could be a stale replay of
+a past result rather than a fresh call. Either way you just get a quiet "Already logged
+in" instead of a pointless fresh QR.
+
+Once logged in, the server also keeps the session alive on its own for as long as it
+keeps running, the same way a browser tab left open on nordnet.se would — so you
+generally won't need to re-authenticate just from being idle. This only helps while the
+server process is actually running; stop it for longer than Nordnet's idle window and
+you'll need to log in again next time it starts.
+
+If you'd rather not use QR login, you can still provide a session token manually — see
+[Manual token setup](#manual-token-setup).
 
 ## Features
 
 - Read-only access to Nordnet portfolio/account data
-- 14 MCP tools across accounts, instruments, and reference data
+- 16 MCP tools across accounts, instruments, reference data, and login
+- QR-code login — no manual token extraction needed
 - Supports Nordnet Sweden, Norway, Denmark, and Finland hosts
 - Environment-variable based setup
 - Packaged as a Python CLI entrypoint: `nordnet-mcp`
@@ -34,23 +71,12 @@ If you do not already have `uv`:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### 2. Get your Nordnet session token
-
-1. Log into `nordnet.se` (or your local Nordnet domain) in your browser.
-2. Open DevTools.
-3. Go to Application/Storage → Cookies.
-4. Select the Nordnet domain.
-5. Find the cookie named `NNX_SESSION_ID`.
-6. Copy its value and use that as `NORDNET_SESSION_TOKEN`.
-7. It will usually look like a UUID-style value such as `7f3a91c2-5648-4dbe-8a17-29c4e6b1f053`.
-
-### 3. Configure credentials
+### 2. Set your market
 
 Create a `.env` file in the working directory used to launch the server (typically the repo root when using `uv run --directory ...`):
 
 ```bash
 cat > .env <<'EOF'
-NORDNET_SESSION_TOKEN=your_token_here
 NORDNET_HOST=public.nordnet.se
 EOF
 ```
@@ -61,7 +87,12 @@ Supported hosts:
 - `public.nordnet.dk`
 - `public.nordnet.fi`
 
-### 4. Run the server locally
+`NORDNET_SESSION_TOKEN` doesn't need to be set up front — the QR login flow (see
+Status above) gets you a session without it, kept in memory for the life of the server
+process. If you'd rather not rely on that, set `NORDNET_SESSION_TOKEN` here yourself;
+see [Manual token setup](#manual-token-setup).
+
+### 3. Run the server locally
 
 From a local clone:
 
@@ -135,8 +166,21 @@ If your `.env` is not in the repo root, export the variables in your shell befor
 
 Notes:
 - Replace `/absolute/path/to/nordnet-mcp` with your local clone path.
-- Supplying credentials through the MCP client's `env` block is often the easiest option.
-- When the token expires, update the token and restart the MCP server.
+- When the session expires, either call `nordnet_auth` again or refresh the token
+  manually and restart the server.
+
+## Manual token setup
+
+If you'd rather not rely on the QR flow, you can provide a session token yourself:
+
+1. Log into `nordnet.se` (or your local Nordnet domain) in your browser.
+2. Open DevTools.
+3. Go to Application/Storage → Cookies.
+4. Select the Nordnet domain.
+5. Find the cookie named `NNX_SESSION_ID`.
+6. Copy its value and set it as `NORDNET_SESSION_TOKEN` in `.env` (or the MCP client's
+   `env` block).
+7. It will usually look like a UUID-style value such as `7f3a91c2-5648-4dbe-8a17-29c4e6b1f053`.
 
 ## Available tools
 
@@ -160,6 +204,11 @@ Notes:
 - `get_instrument_types` — instrument types
 - `get_search_attributes` — search filter attributes
 
+### Login
+- `nordnet_auth` — start (or restart) QR-code login; renders as an MCP App image on
+  supporting hosts, or ASCII art otherwise
+- `nordnet_login_poll` — app-only, polls a pending login and finishes it once approved
+
 ## Development
 
 ```bash
@@ -172,14 +221,26 @@ uv build
 
 - Do not commit `.env`.
 - Do not paste your session token into issues or logs.
-- Tokens are short-lived; if you get a 401/session-expired error, fetch a fresh token from the browser.
+- The QR login flow never exposes the session token to the model or the MCP App view —
+  it's applied straight to the running server's in-memory client and never written to
+  disk. If you set `NORDNET_SESSION_TOKEN` manually instead, treat that `.env` file like
+  it holds a password, because it does.
+- Tokens are short-lived; if you get a 401/session-expired error, call `nordnet_auth`
+  (or fetch a fresh token manually) rather than treating it as a hard failure.
 - This server is read-only by design.
 
 ## Limitations
 
-- Authentication depends on a manually extracted Nordnet browser session token.
-- Tokens expire frequently.
-- The API is unofficial and may change without notice.
+- Sessions are short-lived (a couple of hours) if idle, regardless of how they're
+  obtained. The background keep-alive (see Status) only helps while the server process
+  is actually running.
+- A QR-obtained session is memory-only and does not survive a server restart, so a
+  restart means logging in again. Use manual token setup instead if this is too
+  disruptive in practice.
+- QR login requires the Nordnet mobile app; if you can't use that, provide a manually
+  extracted browser session token instead.
+- The QR login and keep-alive mechanism relies on unofficial Nordnet behavior and may
+  change without notice — same caveat as the rest of the API this project wraps.
 
 ## License
 

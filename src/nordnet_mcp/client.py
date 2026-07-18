@@ -8,16 +8,17 @@ class SessionExpiredError(Exception):
 
 
 class NordnetClient:
-    def __init__(self, session_token: str, host: str = "public.nordnet.se"):
+    def __init__(self, session_token: str | None, host: str = "public.nordnet.se"):
         self.base_url = f"https://{host}/api/2"
         self.session_token = session_token
         self._client = httpx.AsyncClient()
 
     def _auth_header(self) -> dict:
-        creds = base64.b64encode(
-            f"{self.session_token}:{self.session_token}".encode()
-        ).decode()
-        return {"Authorization": f"Basic {creds}"}
+        token = self.session_token or ""
+        creds = base64.b64encode(f"{token}:{token}".encode()).decode()
+        # client-id is not optional - confirmed live, requests without it
+        # get a 401 regardless of whether the token itself is valid.
+        return {"Authorization": f"Basic {creds}", "client-id": "NEXT"}
 
     async def get(self, path: str, params: dict | None = None) -> dict | list:
         resp = await self._client.get(
@@ -27,11 +28,10 @@ class NordnetClient:
         )
         if resp.status_code == 401:
             raise SessionExpiredError(
-                "Session expired. Refresh your token:\n"
-                "1. Log into nordnet.se\n"
-                "2. Open DevTools → Application/Storage → Cookies\n"
-                "3. Select the Nordnet domain and find NNX_SESSION_ID\n"
-                "4. Copy that cookie value into NORDNET_SESSION_TOKEN"
+                "Session expired or not yet authenticated. Call the "
+                "`nordnet_auth` tool to log in via QR code — scan it "
+                "with the Nordnet mobile app and the session will be "
+                "established automatically, no manual token needed."
             )
         resp.raise_for_status()
         if not resp.content:

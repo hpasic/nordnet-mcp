@@ -20,9 +20,10 @@ classifiers = [
     "Topic :: Office/Business :: Financial :: Investment",
 ]
 dependencies = [
-    "mcp>=1.3.0",
+    "mcp>=1.26.0",
     "httpx>=0.28.0",
     "python-dotenv>=1.2.2",
+    "qrcode[pil]>=8.0",
 ]
 
 [project.urls]
@@ -32,6 +33,10 @@ Issues = "https://github.com/hpasic/nordnet-mcp/issues"
 
 [project.scripts]
 nordnet-mcp = "nordnet_mcp:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nordnet_mcp"]
+artifacts = ["src/nordnet_mcp/*.html"]
 
 [dependency-groups]
 dev = [
