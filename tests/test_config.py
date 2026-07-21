@@ -10,11 +10,13 @@ def test_load_config_from_env():
     with patch.dict(os.environ, {
         "NORDNET_SESSION_TOKEN": "my_token",
         "NORDNET_HOST": "public.nordnet.no",
+        "NORDNET_CLIENT_ID": "NEXT",
     }):
         config = load_config()
 
     assert config.session_token == "my_token"
     assert config.host == "public.nordnet.no"
+    assert config.client_id == "NEXT"
 
 
 def test_load_config_no_token_raises():
@@ -28,3 +30,4 @@ def test_load_config_default_host():
         config = load_config()
 
     assert config.host == "public.nordnet.se"
+    assert config.client_id is None

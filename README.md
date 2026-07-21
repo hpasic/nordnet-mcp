@@ -52,8 +52,15 @@ Create a `.env` file in the working directory used to launch the server (typical
 cat > .env <<'EOF'
 NORDNET_SESSION_TOKEN=your_token_here
 NORDNET_HOST=public.nordnet.se
+# NORDNET_CLIENT_ID=NEXT
 EOF
 ```
+
+`NORDNET_CLIENT_ID` is optional. Nordnet session IDs appear to be tied to the
+client that created them. The Finnish Nordnet website currently uses the
+client ID `NEXT`, so a session ID copied from `www.nordnet.fi` may also require
+`NORDNET_CLIENT_ID=NEXT`. If Nordnet responds with `NEXT_INVALID_SESSION`, add
+that setting and restart the server.
 
 Supported hosts:
 - `public.nordnet.se`
