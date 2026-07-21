@@ -57,10 +57,8 @@ EOF
 ```
 
 `NORDNET_CLIENT_ID` is optional. Nordnet session IDs appear to be tied to the
-client that created them. The Finnish Nordnet website currently uses the
-client ID `NEXT`, so a session ID copied from `www.nordnet.fi` may also require
-`NORDNET_CLIENT_ID=NEXT`. If Nordnet responds with `NEXT_INVALID_SESSION`, add
-that setting and restart the server.
+client that created them. If Nordnet responds with `NEXT_INVALID_SESSION`, add
+`NORDNET_CLIENT_ID=NEXT` and restart the server.
 
 Supported hosts:
 - `public.nordnet.se`

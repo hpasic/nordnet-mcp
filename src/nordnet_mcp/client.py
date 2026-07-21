@@ -44,9 +44,8 @@ class NordnetClient:
             if isinstance(error, dict) and error.get("code") == "NEXT_INVALID_SESSION":
                 client_id_hint = (
                     "\nNordnet returned NEXT_INVALID_SESSION. Session IDs appear to be "
-                    "tied to the client that created them, and Finnish web sessions use "
-                    "client-id NEXT. Add NORDNET_CLIENT_ID=NEXT to your environment and "
-                    "restart the server."
+                    "tied to the client that created them. Add NORDNET_CLIENT_ID=NEXT "
+                    "to your environment and restart the server."
                 )
             raise SessionExpiredError(
                 "Session expired. Refresh your token:\n"
