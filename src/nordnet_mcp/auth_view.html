@@ -131,6 +131,23 @@
           showAlreadyAuthenticated();
           return;
         }
+        if (parsed?.status === "error") {
+          // e.g. the outgoing code was approved right before rotation but
+          // finishing the login failed - tell the user instead of showing
+          // another QR as if nothing happened.
+          stopAll();
+          setStatus(parsed.message || "Something went wrong.", "error");
+          retryBtn.style.display = "block";
+          return;
+        }
+        if (parsed?.status === "captured") {
+          // The outgoing code was scanned and the phone is mid-approval -
+          // keep waiting on that order instead of replacing it.
+          setStatus("Code scanned — confirm the login in the Nordnet app…");
+          rotateTimer = setTimeout(generateCode, ROTATE_INTERVAL_MS);
+          if (!pollTimer) pollTimer = setInterval(pollOnce, 2000);
+          return;
+        }
         applyQr(result.content);
         codesGenerated += 1;
         setStatus(`Waiting for you to scan… (code ${codesGenerated} of ${MAX_CODES})`);
@@ -221,6 +238,9 @@
         // Show success quietly; no sendMessage(), since nothing actually
         // happened just now for the conversation to react to.
         showAlreadyAuthenticated();
+      } else if (data.status === "captured") {
+        // Scanned; the phone now drives the approval. Keep polling.
+        setStatus("Code scanned — confirm the login in the Nordnet app…");
       } else if (data.status === "expired") {
         // The code we're showing has died server-side before its own 100s
         // rotation was due - replace it right away instead of waiting.

@@ -199,7 +199,28 @@ async def _poll_once_locked(ignore_local_ttl: bool = False) -> dict:
             json={"signingNonce": order["signing_nonce"]},
         )
         poll_resp.raise_for_status()
-        if poll_resp.json().get("state") != "SIGNED":
+        poll_data = poll_resp.json()
+        # Nordnet rotates the nonces mid-flow: in its own login bundle,
+        # every poll response's signingNonce/loginNonce overwrite the
+        # page's copies before anything else happens (the QR-scan
+        # "CAPTURED" step issues fresh ones), and both the next poll and
+        # the final session POST must use the latest values - polling the
+        # original nonce forever dead-ends in an eternal "pending".
+        if poll_data.get("signingNonce"):
+            order["signing_nonce"] = poll_data["signingNonce"]
+        if poll_data.get("loginNonce"):
+            order["login_nonce"] = poll_data["loginNonce"]
+        state = poll_data.get("state")
+        if state == "CAPTURED":
+            # The phone has scanned the code but the user hasn't approved
+            # in the app yet - from here the phone drives the flow. Give
+            # the approval a fresh TTL window (once per order) so the
+            # code isn't rotated away mid-approval.
+            if not order.get("captured"):
+                order["captured"] = True
+                order["started_at"] = time.monotonic()
+            return {"status": "captured"}
+        if state != "SIGNED":
             return {"status": "pending"}
 
         # Warms the shared client's cookie jar with the _csrf cookie this
@@ -252,9 +273,16 @@ async def _poll_once_locked(ignore_local_ttl: bool = False) -> dict:
             if fetched_ntag:
                 _ntag = fetched_ntag
 
-    session_ok = False
-    with contextlib.suppress(Exception):
+    session_ok = True
+    try:
         session_ok = await _verify_session(token)
+    except Exception:
+        # A transient failure while *checking* isn't evidence the session
+        # is bad - don't discard an approved login over it (Nordnet's own
+        # frontend proceeds optimistically here). Only an authoritative
+        # hasOnpremSession=false below fails the login; if the session
+        # really is broken, the next data call or keepalive surfaces it.
+        pass
     if not session_ok:
         _pending = None
         detail = f" (session bridge call failed: {bridge_error})" if bridge_error is not None else ""
@@ -309,9 +337,14 @@ def register_tools(app):
         tool yourself to actually finish the login (see its own
         description).
         """
-        if await _has_valid_session():
-            return [types.TextContent(type="text", text=json.dumps({"status": "already_authenticated"}))]
         async with _lock:
+            # The validity check happens *under* the order lock: a rotation
+            # request can be waiting here while the view's own poll loop
+            # completes the login, and it must see the result of that login
+            # - a stale pre-lock snapshot would replace a finished login
+            # with a needless fresh QR.
+            if await _has_valid_session():
+                return [types.TextContent(type="text", text=json.dumps({"status": "already_authenticated"}))]
             if _pending is not None:
                 # The view rotates on the same ORDER_TTL_SECONDS=100s window
                 # as the underlying Nordnet order, so a rotation request
@@ -327,6 +360,16 @@ def register_tools(app):
                     result = await _poll_once_locked(ignore_local_ttl=True)
                     if result["status"] == "signed":
                         return [types.TextContent(type="text", text=json.dumps({"status": "already_authenticated"}))]
+                    if result["status"] == "captured":
+                        # Scanned, approval in progress on the phone -
+                        # don't replace the order out from under it.
+                        return [types.TextContent(type="text", text=json.dumps(result))]
+                    if result["status"] == "error":
+                        # The outgoing order *was* approved but finishing
+                        # the login failed - the user did their part, so
+                        # surface that instead of silently showing another
+                        # QR as if nothing happened.
+                        return [types.TextContent(type="text", text=json.dumps(result))]
             order = await _start_order_locked()
         qr_url = f"https://www.nordnet.{_market}/login/web/app?signing_nonce={order['signing_nonce']}"
         # Wall-clock timestamp alongside the image, separate from the
@@ -355,13 +398,14 @@ def register_tools(app):
         actually complete the login.
 
         Returns a status field: "signed" (done - the session is now live),
-        "pending" (not approved yet - if the user says they've scanned it,
+        "pending" (not scanned yet - if the user says they've scanned it,
         wait a couple seconds and call this again; a few retries is normal
-        since approval on their phone isn't instant), "expired" (the QR
-        timed out - call `nordnet_auth` again for a fresh one),
-        "already_authenticated" (nothing was pending; a valid session
-        already existed), or "error" (something went wrong; see the
-        message field).
+        since approval on their phone isn't instant), "captured" (the code
+        has been scanned but the login isn't approved in the app yet -
+        keep polling the same way), "expired" (the QR timed out - call
+        `nordnet_auth` again for a fresh one), "already_authenticated"
+        (nothing was pending; a valid session already existed), or "error"
+        (something went wrong; see the message field).
         """
         result = await _poll_once()
         return [types.TextContent(type="text", text=json.dumps(result))]

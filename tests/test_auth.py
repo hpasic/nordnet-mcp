@@ -472,7 +472,7 @@ async def test_rotation_replaces_order_when_still_unsigned(client):
         "login_nonce": "ln-old",
         "started_at": __import__("time").monotonic() - auth.ORDER_TTL_SECONDS - 1,
     }
-    respx.post(f"{auth.API_HOST}/authentication/v1/methods/luna/poll").mock(
+    poll_route = respx.post(f"{auth.API_HOST}/authentication/v1/methods/luna/poll").mock(
         return_value=httpx.Response(200, json={"signingNonce": "sn-old", "state": "SENT"})
     )
     respx.get(f"{auth.API_HOST}/authentication/v1/methods/luna/start").mock(
@@ -485,8 +485,261 @@ async def test_rotation_replaces_order_when_still_unsigned(client):
     result = await app.tools["nordnet_auth"]()
 
     assert len(result) == 3  # a fresh QR: image + meta + ascii
+    # The outgoing order must really have been polled (a TTL short-circuit
+    # that skips straight to the replacement would pass every other assert).
+    assert poll_route.called
+    assert json.loads(poll_route.calls[0].request.content)["signingNonce"] == "sn-old"
     assert auth._pending["signing_nonce"] == "sn-new"
     assert auth._pending["login_nonce"] == "ln-new"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_rotation_surfaces_error_when_approved_login_fails(client):
+    # If the outgoing order WAS approved but finishing the login failed,
+    # the user did their part - rotation must surface the error, not
+    # silently show another QR as if nothing happened.
+    auth.configure(client=client, host="public.nordnet.se")
+    auth._pending = {
+        "signing_nonce": "sn-old",
+        "login_nonce": "ln-old",
+        "started_at": __import__("time").monotonic() - auth.ORDER_TTL_SECONDS - 1,
+    }
+    respx.post(f"{auth.API_HOST}/authentication/v1/methods/luna/poll").mock(
+        return_value=httpx.Response(200, json={"signingNonce": "sn-old", "state": "SIGNED"})
+    )
+    respx.get("https://www.nordnet.se/next-external/csrf").mock(
+        return_value=httpx.Response(200, json={"csrf": "csrf-token"})
+    )
+    respx.post("https://www.nordnet.se/nnxapi/authentication/v2/sessions").mock(
+        return_value=httpx.Response(401)
+    )
+    start_route = respx.get(f"{auth.API_HOST}/authentication/v1/methods/luna/start")
+
+    app = auth.register_tools(_FakeApp())
+    result = await app.tools["nordnet_auth"]()
+
+    assert len(result) == 1
+    data = json.loads(result[0].text)
+    assert data["status"] == "error"
+    assert "401" in data["message"]
+    assert not start_route.called
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_poll_signed_transient_verify_failure_still_signs_in(client):
+    # A network hiccup while *checking* the freshly-created session is not
+    # evidence the session is bad - an approved login must not be thrown
+    # away over it. Only an authoritative hasOnpremSession=false may fail
+    # the login.
+    auth.configure(client=client, host="public.nordnet.se")
+    auth._pending = {
+        "signing_nonce": "sn-1",
+        "login_nonce": "ln-1",
+        "started_at": __import__("time").monotonic(),
+    }
+    respx.post(f"{auth.API_HOST}/authentication/v1/methods/luna/poll").mock(
+        return_value=httpx.Response(200, json={"signingNonce": "sn-1", "state": "SIGNED"})
+    )
+    respx.get("https://www.nordnet.se/next-external/csrf").mock(
+        return_value=httpx.Response(200, json={"csrf": "csrf-token"})
+    )
+    respx.post("https://www.nordnet.se/nnxapi/authentication/v2/sessions").mock(
+        return_value=httpx.Response(
+            200,
+            headers=[("set-cookie", "NNX_SESSION_ID=optimistic-token; Path=/; HttpOnly")],
+        )
+    )
+    respx.post("https://www.nordnet.se/api/2/authentication/nnx-session/login").mock(
+        return_value=httpx.Response(200)
+    )
+    respx.get("https://www.nordnet.se/").mock(
+        return_value=httpx.Response(200, text=ROOT_PAGE_HTML)
+    )
+    respx.get("https://www.nordnet.se/nnxapi/authentication/v2/sessions/verify").mock(
+        side_effect=httpx.ConnectError("boom")
+    )
+
+    result = await auth._poll_once()
+
+    assert result == {"status": "signed"}
+    assert client.session_token == "optimistic-token"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_poll_captured_adopts_fresh_nonces_then_signs_with_them(client):
+    # Nordnet's LUNA flow goes SENT -> CAPTURED (phone scanned the code;
+    # fresh nonces are issued) -> SIGNED (user approved in the app). Its
+    # own login page adopts the nonces from every poll response - polling
+    # the original nonce forever dead-ends in an eternal "pending", which
+    # is exactly what happened live before this was handled.
+    auth.configure(client=client, host="public.nordnet.se")
+    auth._pending = {
+        "signing_nonce": "sn-1",
+        "login_nonce": "ln-1",
+        "started_at": __import__("time").monotonic(),
+    }
+    poll_route = respx.post(f"{auth.API_HOST}/authentication/v1/methods/luna/poll").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={"state": "CAPTURED", "signingNonce": "sn-2", "loginNonce": "ln-2"},
+            ),
+            httpx.Response(200, json={"state": "SIGNED", "signingNonce": "sn-2"}),
+        ]
+    )
+    respx.get("https://www.nordnet.se/next-external/csrf").mock(
+        return_value=httpx.Response(200, json={"csrf": "csrf-token"})
+    )
+    session_route = respx.post("https://www.nordnet.se/nnxapi/authentication/v2/sessions").mock(
+        return_value=httpx.Response(
+            200,
+            headers=[("set-cookie", "NNX_SESSION_ID=captured-token; Path=/; HttpOnly")],
+        )
+    )
+    respx.post("https://www.nordnet.se/api/2/authentication/nnx-session/login").mock(
+        return_value=httpx.Response(200)
+    )
+    respx.get("https://www.nordnet.se/").mock(
+        return_value=httpx.Response(200, text=ROOT_PAGE_HTML)
+    )
+    respx.get("https://www.nordnet.se/nnxapi/authentication/v2/sessions/verify").mock(
+        return_value=httpx.Response(200, json={"hasOnpremSession": True})
+    )
+
+    first = await auth._poll_once()
+
+    assert first == {"status": "captured"}
+    assert auth._pending["signing_nonce"] == "sn-2"
+    assert auth._pending["login_nonce"] == "ln-2"
+
+    second = await auth._poll_once()
+
+    assert second == {"status": "signed"}
+    assert client.session_token == "captured-token"
+    # The second poll must have asked about the *rotated* nonce...
+    assert json.loads(poll_route.calls[1].request.content)["signingNonce"] == "sn-2"
+    # ...and the session POST must carry the latest nonces, not the originals.
+    sent = json.loads(session_route.calls[0].request.content)
+    assert sent["luna"]["signingNonce"] == "sn-2"
+    assert sent["luna"]["loginNonce"] == "ln-2"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_poll_captured_refreshes_ttl_once(client):
+    # A scan right before the order's local TTL must win a fresh approval
+    # window (the phone is now driving the flow) - but only once, so an
+    # abandoned scanned-but-never-approved order still expires.
+    auth.configure(client=client, host="public.nordnet.se")
+    started_long_ago = __import__("time").monotonic() - auth.ORDER_TTL_SECONDS + 1
+    auth._pending = {
+        "signing_nonce": "sn-1",
+        "login_nonce": "ln-1",
+        "started_at": started_long_ago,
+    }
+    respx.post(f"{auth.API_HOST}/authentication/v1/methods/luna/poll").mock(
+        return_value=httpx.Response(200, json={"state": "CAPTURED", "signingNonce": "sn-2"})
+    )
+
+    assert (await auth._poll_once()) == {"status": "captured"}
+    refreshed = auth._pending["started_at"]
+    assert refreshed > started_long_ago
+    assert auth._pending["captured"] is True
+
+    assert (await auth._poll_once()) == {"status": "captured"}
+    assert auth._pending["started_at"] == refreshed  # no second refresh
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_rotation_keeps_captured_order(client):
+    # The rotation timer can fire while the phone is mid-approval on a
+    # scanned code - the order must not be replaced out from under it.
+    auth.configure(client=client, host="public.nordnet.se")
+    auth._pending = {
+        "signing_nonce": "sn-old",
+        "login_nonce": "ln-old",
+        "started_at": __import__("time").monotonic() - auth.ORDER_TTL_SECONDS - 1,
+    }
+    respx.post(f"{auth.API_HOST}/authentication/v1/methods/luna/poll").mock(
+        return_value=httpx.Response(200, json={"state": "CAPTURED"})
+    )
+    start_route = respx.get(f"{auth.API_HOST}/authentication/v1/methods/luna/start")
+
+    app = auth.register_tools(_FakeApp())
+    result = await app.tools["nordnet_auth"]()
+
+    assert len(result) == 1
+    assert json.loads(result[0].text) == {"status": "captured"}
+    assert not start_route.called
+    assert auth._pending["signing_nonce"] == "sn-old"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_rotation_waits_for_in_flight_poll_and_sees_its_login(client):
+    # Concurrency regression test for the order lock: a rotation arriving
+    # while a poll is mid-flight must wait, and must then see the login
+    # that poll completed - not mix nonces from two orders, and not start
+    # a needless fresh order over a finished login.
+    auth.configure(client=client, host="public.nordnet.se")
+    auth._pending = {
+        "signing_nonce": "sn-old",
+        "login_nonce": "ln-old",
+        "started_at": __import__("time").monotonic(),
+    }
+
+    async def slow_signed_poll(request):
+        await asyncio.sleep(0.05)  # keep the poll in flight while rotation arrives
+        return httpx.Response(200, json={"signingNonce": "sn-old", "state": "SIGNED"})
+
+    respx.post(f"{auth.API_HOST}/authentication/v1/methods/luna/poll").mock(
+        side_effect=slow_signed_poll
+    )
+    respx.get("https://www.nordnet.se/next-external/csrf").mock(
+        return_value=httpx.Response(200, json={"csrf": "csrf-token"})
+    )
+    session_route = respx.post("https://www.nordnet.se/nnxapi/authentication/v2/sessions").mock(
+        return_value=httpx.Response(
+            200,
+            headers=[("set-cookie", "NNX_SESSION_ID=race-token; Path=/; HttpOnly")],
+        )
+    )
+    respx.post("https://www.nordnet.se/api/2/authentication/nnx-session/login").mock(
+        return_value=httpx.Response(200)
+    )
+    respx.post("https://www.nordnet.se/nnxapi/authorization/v1/tokens").mock(
+        return_value=httpx.Response(200, json={"jwt": "x"})
+    )
+    respx.get("https://www.nordnet.se/").mock(
+        return_value=httpx.Response(200, text=ROOT_PAGE_HTML)
+    )
+    respx.get("https://www.nordnet.se/nnxapi/authentication/v2/sessions/verify").mock(
+        return_value=httpx.Response(200, json={"hasOnpremSession": True})
+    )
+    start_route = respx.get(f"{auth.API_HOST}/authentication/v1/methods/luna/start")
+
+    app = auth.register_tools(_FakeApp())
+    poll_task = asyncio.create_task(auth._poll_once())
+    await asyncio.sleep(0.01)  # let the poll take the lock first
+    rotate_task = asyncio.create_task(app.tools["nordnet_auth"]())
+    poll_result, rotate_result = await asyncio.gather(poll_task, rotate_task)
+
+    assert poll_result == {"status": "signed"}
+    assert client.session_token == "race-token"
+    # The session POST must carry the polled order's nonces, untouched by
+    # the concurrent rotation.
+    sent = json.loads(session_route.calls[0].request.content)
+    assert sent["luna"]["signingNonce"] == "sn-old"
+    assert sent["luna"]["loginNonce"] == "ln-old"
+    # And the rotation must report the finished login, not a fresh QR.
+    assert len(rotate_result) == 1
+    assert json.loads(rotate_result[0].text) == {"status": "already_authenticated"}
+    assert not start_route.called
+    assert auth._pending is None
 
 
 @respx.mock
