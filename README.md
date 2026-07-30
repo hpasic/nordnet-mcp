@@ -141,6 +141,8 @@ If your `.env` is not in the repo root, export the variables in your shell befor
 Notes:
 - Replace `/absolute/path/to/nordnet-mcp` with your local clone path.
 - Supplying credentials through the MCP client's `env` block is often the easiest option.
+- If Nordnet responds with `NEXT_INVALID_SESSION`, add `"NORDNET_CLIENT_ID": "NEXT"` to
+  the `env` block (or `-e NORDNET_CLIENT_ID=NEXT` for Docker) — see the note above.
 - When the token expires, update the token and restart the MCP server.
 
 ## Available tools

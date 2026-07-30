@@ -31,3 +31,23 @@ def test_load_config_default_host():
 
     assert config.host == "public.nordnet.se"
     assert config.client_id is None
+
+
+def test_load_config_client_id_stripped():
+    with patch.dict(os.environ, {
+        "NORDNET_SESSION_TOKEN": "tok",
+        "NORDNET_CLIENT_ID": " NEXT ",
+    }, clear=True):
+        config = load_config()
+
+    assert config.client_id == "NEXT"
+
+
+def test_load_config_blank_client_id_is_none():
+    with patch.dict(os.environ, {
+        "NORDNET_SESSION_TOKEN": "tok",
+        "NORDNET_CLIENT_ID": "   ",
+    }, clear=True):
+        config = load_config()
+
+    assert config.client_id is None

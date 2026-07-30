@@ -13,7 +13,7 @@ def load_config() -> NordnetConfig:
     """Load config from environment variables."""
     token = os.environ.get("NORDNET_SESSION_TOKEN")
     host = os.environ.get("NORDNET_HOST", "public.nordnet.se")
-    client_id = os.environ.get("NORDNET_CLIENT_ID") or None
+    client_id = os.environ.get("NORDNET_CLIENT_ID", "").strip() or None
 
     if not token:
         raise ValueError(
