@@ -16,7 +16,10 @@ Important:
 The server can now log itself in: call the `nordnet_auth` tool (or just try any
 Nordnet tool — a 401 tells the model to call it) and a QR code appears in the
 conversation. Scan it with the Nordnet mobile app and the session is established
-automatically — no browser DevTools, no copy-pasting a cookie. In MCP Apps-capable
+automatically — no browser DevTools, no copy-pasting a cookie. `NORDNET_HOST`
+must match the market your Nordnet app is registered in (e.g.
+`public.nordnet.no` for a Norwegian account): the QR encodes a login link on
+that market's domain, and an app from another market silently ignores the scan. In MCP Apps-capable
 hosts this renders as a live QR image that rotates itself every 100 seconds (up to 3
 codes / 5 minutes) if you haven't scanned it yet, and once approved it disappears and
 sends a follow-up message so you don't have to retype what you originally asked.
