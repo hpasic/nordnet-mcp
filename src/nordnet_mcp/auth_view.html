@@ -57,8 +57,12 @@
   <div id="qr"></div>
   <div id="status">Waiting for you to scan…</div>
   <button id="retry">Show a new code</button>
+  <!-- Vendored MCP ext-apps SDK, spliced in by auth.py at load time (see
+       vendor/ext_apps_iife.js) - keeps the login view free of runtime
+       third-party CDN fetches. -->
+  <script>/*__VENDORED_EXT_APPS__*/</script>
   <script type="module">
-    import { App } from "https://unpkg.com/@modelcontextprotocol/ext-apps@0.4.0/app-with-deps";
+    const { App } = window.MCPExtApps;
 
     const app = new App({ name: "Nordnet Login", version: "1.0.0" });
 

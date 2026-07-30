@@ -508,14 +508,28 @@ async def lifespan(app):
                 await task
 
 
-EMBEDDED_VIEW_HTML = (importlib.resources.files(__package__) / "auth_view.html").read_text(encoding="utf-8")
+def _load_view_html() -> str:
+    """The view HTML with the vendored ext-apps SDK spliced in - shipped
+    inside the package so the login view never fetches script from a
+    third-party CDN at runtime (see vendor/ext_apps_iife.js)."""
+    pkg = importlib.resources.files(__package__)
+    html = (pkg / "auth_view.html").read_text(encoding="utf-8")
+    vendored = (pkg / "vendor" / "ext_apps_iife.js").read_text(encoding="utf-8")
+    marker = "/*__VENDORED_EXT_APPS__*/"
+    if marker not in html:
+        raise RuntimeError("auth_view.html is missing the vendored-SDK marker")
+    return html.replace(marker, vendored)
+
+
+EMBEDDED_VIEW_HTML = _load_view_html()
 
 
 def register_resources(app):
     @app.resource(
         VIEW_URI,
         mime_type="text/html;profile=mcp-app",
-        meta={"ui": {"csp": {"resourceDomains": ["https://unpkg.com"]}}},
+        # No external resource domains: the SDK is vendored into the HTML.
+        meta={"ui": {"csp": {"resourceDomains": []}}},
     )
     def view() -> str:
         """Login QR view HTML."""
