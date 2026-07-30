@@ -118,6 +118,19 @@
       clearTimeout(rotateTimer);
       try {
         const result = await app.callServerTool({ name: "nordnet_auth", arguments: {} });
+        // A rotation can come back with "already_authenticated" instead of
+        // a fresh QR - either a valid session already existed, or the user
+        // approved the outgoing code right before rotation and the server's
+        // last poll picked it up. Either way: done, not "keep scanning".
+        const textBlock = result.content?.find((c) => c.type === "text")?.text;
+        let parsed = null;
+        if (textBlock) {
+          try { parsed = JSON.parse(textBlock); } catch (e) { /* not JSON we recognize */ }
+        }
+        if (parsed?.status === "already_authenticated") {
+          showAlreadyAuthenticated();
+          return;
+        }
         applyQr(result.content);
         codesGenerated += 1;
         setStatus(`Waiting for you to scan… (code ${codesGenerated} of ${MAX_CODES})`);
@@ -154,7 +167,21 @@
       }
     }
 
+    let pollInFlight = false;
     async function pollOnce() {
+      // setInterval keeps firing even when a poll takes >2s (slow network,
+      // a rotation holding the server's order lock) - don't stack another
+      // request on top of one still in flight.
+      if (pollInFlight) return;
+      pollInFlight = true;
+      try {
+        await pollOnceInner();
+      } finally {
+        pollInFlight = false;
+      }
+    }
+
+    async function pollOnceInner() {
       let data;
       try {
         const result = await app.callServerTool({ name: "nordnet_login_poll", arguments: {} });

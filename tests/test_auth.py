@@ -309,11 +309,17 @@ async def test_poll_signed_updates_client_token_in_memory(client):
     root_route = respx.get("https://www.nordnet.se/").mock(
         return_value=httpx.Response(200, text=ROOT_PAGE_HTML)
     )
+    respx.get("https://www.nordnet.se/nnxapi/authentication/v2/sessions/verify").mock(
+        return_value=httpx.Response(200, json={"hasOnpremSession": True})
+    )
 
     result = await auth._poll_once()
 
     assert result == {"status": "signed"}
     assert client.session_token == "new-token-123"
+    # A QR-obtained session was created by the NEXT web client, so the data
+    # API needs the matching client-id header from now on.
+    assert client.client_id == "NEXT"
     assert auth._pending is None
     sent = session_route.calls[0].request
     assert sent.headers["ntag"] == auth.NTAG_SENTINEL
@@ -356,6 +362,9 @@ async def test_poll_signed_does_not_refetch_ntag_once_already_known(client):
     )
     respx.post("https://www.nordnet.se/api/2/authentication/nnx-session/login").mock(
         return_value=httpx.Response(200)
+    )
+    respx.get("https://www.nordnet.se/nnxapi/authentication/v2/sessions/verify").mock(
+        return_value=httpx.Response(200, json={"hasOnpremSession": True})
     )
     root_route = respx.get("https://www.nordnet.se/")
 
@@ -405,6 +414,163 @@ async def test_poll_expired_order_is_cleared():
 
     assert result == {"status": "expired"}
     assert auth._pending is None
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_rotation_completes_login_approved_just_before_rotation(client):
+    # Regression test: the view rotates on the same 100s window as the
+    # order's local TTL, so by the time a rotation request arrives the TTL
+    # has typically just expired. An approval that landed moments earlier
+    # must still be picked up - the rotation path has to genuinely ask
+    # Nordnet about the outgoing order (ignoring the local clock), not
+    # short-circuit to "expired" and strand the approval.
+    auth.configure(client=client, host="public.nordnet.se")
+    auth._pending = {
+        "signing_nonce": "sn-old",
+        "login_nonce": "ln-old",
+        "started_at": __import__("time").monotonic() - auth.ORDER_TTL_SECONDS - 1,
+    }
+    respx.post(f"{auth.API_HOST}/authentication/v1/methods/luna/poll").mock(
+        return_value=httpx.Response(200, json={"signingNonce": "sn-old", "state": "SIGNED"})
+    )
+    respx.get("https://www.nordnet.se/next-external/csrf").mock(
+        return_value=httpx.Response(200, json={"csrf": "csrf-token"})
+    )
+    respx.post("https://www.nordnet.se/nnxapi/authentication/v2/sessions").mock(
+        return_value=httpx.Response(
+            200,
+            headers=[("set-cookie", "NNX_SESSION_ID=rotated-token; Path=/; HttpOnly")],
+        )
+    )
+    respx.post("https://www.nordnet.se/api/2/authentication/nnx-session/login").mock(
+        return_value=httpx.Response(200)
+    )
+    respx.get("https://www.nordnet.se/").mock(
+        return_value=httpx.Response(200, text=ROOT_PAGE_HTML)
+    )
+    respx.get("https://www.nordnet.se/nnxapi/authentication/v2/sessions/verify").mock(
+        return_value=httpx.Response(200, json={"hasOnpremSession": True})
+    )
+    start_route = respx.get(f"{auth.API_HOST}/authentication/v1/methods/luna/start")
+
+    app = auth.register_tools(_FakeApp())
+    result = await app.tools["nordnet_auth"]()
+
+    assert len(result) == 1
+    assert json.loads(result[0].text) == {"status": "already_authenticated"}
+    assert client.session_token == "rotated-token"
+    assert not start_route.called  # no needless new QR for a finished login
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_rotation_replaces_order_when_still_unsigned(client):
+    auth.configure(client=client, host="public.nordnet.se")
+    auth._pending = {
+        "signing_nonce": "sn-old",
+        "login_nonce": "ln-old",
+        "started_at": __import__("time").monotonic() - auth.ORDER_TTL_SECONDS - 1,
+    }
+    respx.post(f"{auth.API_HOST}/authentication/v1/methods/luna/poll").mock(
+        return_value=httpx.Response(200, json={"signingNonce": "sn-old", "state": "SENT"})
+    )
+    respx.get(f"{auth.API_HOST}/authentication/v1/methods/luna/start").mock(
+        return_value=httpx.Response(
+            200, json={"signingNonce": "sn-new", "loginNonce": "ln-new", "state": "SENT"}
+        )
+    )
+
+    app = auth.register_tools(_FakeApp())
+    result = await app.tools["nordnet_auth"]()
+
+    assert len(result) == 3  # a fresh QR: image + meta + ascii
+    assert auth._pending["signing_nonce"] == "sn-new"
+    assert auth._pending["login_nonce"] == "ln-new"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_poll_signed_bridge_failure_surfaces_error(client):
+    # Regression test: a failed nnx-session bridge call used to be
+    # swallowed and the login still reported as "signed", leaving the user
+    # with a token the data API rejects. It must surface as an error when
+    # verify() confirms the session isn't actually working.
+    auth.configure(client=client, host="public.nordnet.se")
+    auth._pending = {
+        "signing_nonce": "sn-1",
+        "login_nonce": "ln-1",
+        "started_at": __import__("time").monotonic(),
+    }
+    respx.post(f"{auth.API_HOST}/authentication/v1/methods/luna/poll").mock(
+        return_value=httpx.Response(200, json={"signingNonce": "sn-1", "state": "SIGNED"})
+    )
+    respx.get("https://www.nordnet.se/next-external/csrf").mock(
+        return_value=httpx.Response(200, json={"csrf": "csrf-token"})
+    )
+    respx.post("https://www.nordnet.se/nnxapi/authentication/v2/sessions").mock(
+        return_value=httpx.Response(
+            200,
+            headers=[("set-cookie", "NNX_SESSION_ID=broken-token; Path=/; HttpOnly")],
+        )
+    )
+    respx.post("https://www.nordnet.se/api/2/authentication/nnx-session/login").mock(
+        return_value=httpx.Response(500)
+    )
+    respx.get("https://www.nordnet.se/").mock(
+        return_value=httpx.Response(200, text=ROOT_PAGE_HTML)
+    )
+    respx.get("https://www.nordnet.se/nnxapi/authentication/v2/sessions/verify").mock(
+        return_value=httpx.Response(200, json={"hasOnpremSession": False})
+    )
+
+    result = await auth._poll_once()
+
+    assert result["status"] == "error"
+    assert "bridge call failed" in result["message"]
+    assert client.session_token is None  # never handed a token that doesn't work
+    assert auth._pending is None
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_poll_signed_but_verify_false_surfaces_error(client):
+    # Even with the bridge call succeeding, "signed" is only reported once
+    # verify() confirms Nordnet actually considers the session working.
+    auth.configure(client=client, host="public.nordnet.se")
+    auth._pending = {
+        "signing_nonce": "sn-1",
+        "login_nonce": "ln-1",
+        "started_at": __import__("time").monotonic(),
+    }
+    respx.post(f"{auth.API_HOST}/authentication/v1/methods/luna/poll").mock(
+        return_value=httpx.Response(200, json={"signingNonce": "sn-1", "state": "SIGNED"})
+    )
+    respx.get("https://www.nordnet.se/next-external/csrf").mock(
+        return_value=httpx.Response(200, json={"csrf": "csrf-token"})
+    )
+    respx.post("https://www.nordnet.se/nnxapi/authentication/v2/sessions").mock(
+        return_value=httpx.Response(
+            200,
+            headers=[("set-cookie", "NNX_SESSION_ID=half-token; Path=/; HttpOnly")],
+        )
+    )
+    respx.post("https://www.nordnet.se/api/2/authentication/nnx-session/login").mock(
+        return_value=httpx.Response(200)
+    )
+    respx.get("https://www.nordnet.se/").mock(
+        return_value=httpx.Response(200, text=ROOT_PAGE_HTML)
+    )
+    respx.get("https://www.nordnet.se/nnxapi/authentication/v2/sessions/verify").mock(
+        return_value=httpx.Response(200, json={"hasOnpremSession": False})
+    )
+
+    result = await auth._poll_once()
+
+    assert result["status"] == "error"
+    assert "working session" in result["message"]
+    assert "bridge call failed" not in result["message"]
+    assert client.session_token is None
 
 
 VERIFY_URL = "https://www.nordnet.se/nnxapi/authentication/v2/sessions/verify"
@@ -530,8 +696,13 @@ def test_view_resource_registers_ui_html():
 
     fn, kwargs = resources[auth.VIEW_URI]
     assert kwargs["mime_type"] == "text/html;profile=mcp-app"
-    assert "unpkg.com" in kwargs["meta"]["ui"]["csp"]["resourceDomains"][0]
-    assert "<html>" in fn()
+    # The SDK is vendored into the HTML - the view must need no external
+    # resource domains at all.
+    assert kwargs["meta"]["ui"]["csp"]["resourceDomains"] == []
+    html = fn()
+    assert "<html>" in html
+    assert "MCPExtApps" in html
+    assert "unpkg.com" not in html
 
 
 class _FakeApp:

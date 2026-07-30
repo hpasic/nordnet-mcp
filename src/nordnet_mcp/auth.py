@@ -95,6 +95,11 @@ _client = None  # NordnetClient - session_token is mutated in place on success
 _market = "se"
 _pending: dict | None = None
 _ntag = NTAG_SENTINEL
+# Serializes every read-modify-write of _pending (the view's poll loop vs
+# the rotation path in nordnet_auth): without it, a rotation can replace
+# the order while a poll is mid-flight, and the session POST would then mix
+# nonces from two different orders.
+_lock = asyncio.Lock()
 
 
 def configure(client, host: str = "public.nordnet.se"):
@@ -134,6 +139,11 @@ def _qr_ascii_content(url: str) -> types.TextContent:
 
 
 async def _start_order() -> dict:
+    async with _lock:
+        return await _start_order_locked()
+
+
+async def _start_order_locked() -> dict:
     global _pending
 
     async with httpx.AsyncClient() as http:
@@ -150,6 +160,11 @@ async def _start_order() -> dict:
 
 
 async def _poll_once() -> dict:
+    async with _lock:
+        return await _poll_once_locked()
+
+
+async def _poll_once_locked(ignore_local_ttl: bool = False) -> dict:
     global _pending, _ntag
 
     if _pending is None:
@@ -166,7 +181,13 @@ async def _poll_once() -> dict:
         if await _has_valid_session():
             return {"status": "already_authenticated"}
         return {"status": "expired"}
-    if time.monotonic() - _pending["started_at"] > ORDER_TTL_SECONDS:
+    # Snapshot: everything below refers to this specific order, even though
+    # the lock already guarantees _pending can't be swapped underneath us.
+    order = _pending
+    # The rotation path passes ignore_local_ttl=True: there, the question
+    # is whether Nordnet considers the *outgoing* order signed, and the
+    # server's verdict matters more than our local clock.
+    if not ignore_local_ttl and time.monotonic() - order["started_at"] > ORDER_TTL_SECONDS:
         _pending = None
         return {"status": "expired"}
 
@@ -175,7 +196,7 @@ async def _poll_once() -> dict:
     async with httpx.AsyncClient() as http:
         poll_resp = await http.post(
             f"{API_HOST}/authentication/v1/methods/luna/poll",
-            json={"signingNonce": _pending["signing_nonce"]},
+            json={"signingNonce": order["signing_nonce"]},
         )
         poll_resp.raise_for_status()
         if poll_resp.json().get("state") != "SIGNED":
@@ -194,8 +215,8 @@ async def _poll_once() -> dict:
                 "authenticationProvider": "LUNA",
                 "countryCode": _market.upper(),
                 "luna": {
-                    "signingNonce": _pending["signing_nonce"],
-                    "loginNonce": _pending["login_nonce"],
+                    "signingNonce": order["signing_nonce"],
+                    "loginNonce": order["login_nonce"],
                 },
             },
         )
@@ -210,23 +231,45 @@ async def _poll_once() -> dict:
         return {"status": "error", "message": "No NNX_SESSION_ID cookie in response"}
 
     # The NNX_SESSION_ID cookie alone isn't a working on-prem session yet -
-    # see module docstring. Best-effort and non-fatal, matching what
-    # Nordnet's own frontend does right here (it logs and still proceeds
-    # even if this fails).
-    with contextlib.suppress(Exception):
+    # see module docstring. Nordnet's own frontend logs and proceeds when
+    # this fails, but "signed" is only reported below after verify()
+    # confirms the session actually works, so a bridge failure can't
+    # silently masquerade as a successful login.
+    bridge_error: Exception | None = None
+    try:
         await _create_nnapi_session(token)
-        # ntag is fetched once per process and kept in memory (same guard
-        # as _has_valid_session) - not re-fetched on every login. It's been
-        # observed identical across different tokens from the same
-        # environment, so it isn't tied to the specific login, and each
-        # fetch costs a full ~900KB page load.
-        if _ntag == NTAG_SENTINEL:
+    except Exception as exc:
+        bridge_error = exc
+
+    # ntag is fetched once per process and kept in memory (same guard
+    # as _has_valid_session) - not re-fetched on every login. It's been
+    # observed identical across different tokens from the same
+    # environment, so it isn't tied to the specific login, and each
+    # fetch costs a full ~900KB page load.
+    if _ntag == NTAG_SENTINEL:
+        with contextlib.suppress(Exception):
             fetched_ntag = await _fetch_ntag(token)
             if fetched_ntag:
                 _ntag = fetched_ntag
 
+    session_ok = False
+    with contextlib.suppress(Exception):
+        session_ok = await _verify_session(token)
+    if not session_ok:
+        _pending = None
+        detail = f" (session bridge call failed: {bridge_error})" if bridge_error is not None else ""
+        return {
+            "status": "error",
+            "message": "Login was approved, but Nordnet did not report a "
+            f"working session afterwards{detail}. Scan a fresh code to try again.",
+        }
+
     if _client is not None:
         _client.session_token = token
+        # Nordnet ties sessions to the client that created them, and this
+        # one was created by the NEXT web client - the data API 401s
+        # without this header for QR-obtained tokens (confirmed live).
+        _client.client_id = "NEXT"
 
     _pending = None
     return {"status": "signed"}
@@ -268,17 +311,23 @@ def register_tools(app):
         """
         if await _has_valid_session():
             return [types.TextContent(type="text", text=json.dumps({"status": "already_authenticated"}))]
-        if _pending is not None:
-            # The view now rotates on the same ORDER_TTL_SECONDS=100s window
-            # as the underlying Nordnet order, but a rotation request can
-            # still land right as that window closes - if the user scanned
-            # and approved it just before then, overwriting `_pending` here
-            # would silently strand that approval. Give it one last poll
-            # before replacing it.
-            result = await _poll_once()
-            if result["status"] == "signed":
-                return [types.TextContent(type="text", text=json.dumps({"status": "already_authenticated"}))]
-        order = await _start_order()
+        async with _lock:
+            if _pending is not None:
+                # The view rotates on the same ORDER_TTL_SECONDS=100s window
+                # as the underlying Nordnet order, so a rotation request
+                # normally lands right as that window closes - if the user
+                # scanned and approved just before then, replacing `_pending`
+                # without checking would silently strand that approval. Ask
+                # Nordnet one last time, ignoring the local TTL (it has
+                # usually just expired by now; the server's verdict on the
+                # outgoing order is what matters), and only rotate if it
+                # still isn't signed. Holding the lock across poll + start
+                # keeps the two atomic against the view's own poll loop.
+                with contextlib.suppress(httpx.HTTPError):
+                    result = await _poll_once_locked(ignore_local_ttl=True)
+                    if result["status"] == "signed":
+                        return [types.TextContent(type="text", text=json.dumps({"status": "already_authenticated"}))]
+            order = await _start_order_locked()
         qr_url = f"https://www.nordnet.{_market}/login/web/app?signing_nonce={order['signing_nonce']}"
         # Wall-clock timestamp alongside the image, separate from the
         # monotonic one used for the server's own TTL bookkeeping in
