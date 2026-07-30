@@ -12,6 +12,7 @@ def create_app() -> FastMCP:
     client = NordnetClient(
         session_token=config.session_token,
         host=config.host,
+        client_id=config.client_id,
     )
 
     app = FastMCP("Nordnet", lifespan=auth.lifespan)

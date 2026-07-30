@@ -78,8 +78,13 @@ Create a `.env` file in the working directory used to launch the server (typical
 ```bash
 cat > .env <<'EOF'
 NORDNET_HOST=public.nordnet.se
+# NORDNET_CLIENT_ID=NEXT
 EOF
 ```
+
+`NORDNET_CLIENT_ID` is optional. Nordnet session IDs appear to be tied to the
+client that created them. If Nordnet responds with `NEXT_INVALID_SESSION`, add
+`NORDNET_CLIENT_ID=NEXT` and restart the server.
 
 Supported hosts:
 - `public.nordnet.se`
@@ -166,6 +171,9 @@ If your `.env` is not in the repo root, export the variables in your shell befor
 
 Notes:
 - Replace `/absolute/path/to/nordnet-mcp` with your local clone path.
+- Supplying credentials through the MCP client's `env` block is often the easiest option.
+- If Nordnet responds with `NEXT_INVALID_SESSION`, add `"NORDNET_CLIENT_ID": "NEXT"` to
+  the `env` block (or `-e NORDNET_CLIENT_ID=NEXT` for Docker) — see the note above.
 - When the session expires, either call `nordnet_auth` again or refresh the token
   manually and restart the server.
 
@@ -181,6 +189,7 @@ If you'd rather not rely on the QR flow, you can provide a session token yoursel
 6. Copy its value and set it as `NORDNET_SESSION_TOKEN` in `.env` (or the MCP client's
    `env` block).
 7. It will usually look like a UUID-style value such as `7f3a91c2-5648-4dbe-8a17-29c4e6b1f053`.
+>>>>>>> fdd1965 (feat: login via QR code)
 
 ## Available tools
 

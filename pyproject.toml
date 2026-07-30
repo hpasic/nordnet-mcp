@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Office/Business :: Financial :: Investment",
 ]
 dependencies = [
-    "mcp>=1.26.0",
+    "mcp>=1.28.1,<2",
     "httpx>=0.28.0",
     "python-dotenv>=1.2.2",
     "qrcode[pil]>=8.0",
