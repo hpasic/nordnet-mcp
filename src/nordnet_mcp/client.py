@@ -10,7 +10,7 @@ class SessionExpiredError(Exception):
 class NordnetClient:
     def __init__(
         self,
-        session_token: str,
+        session_token: str | None,
         host: str = "public.nordnet.se",
         client_id: str | None = None,
     ):
@@ -20,10 +20,12 @@ class NordnetClient:
         self._client = httpx.AsyncClient()
 
     def _auth_header(self) -> dict:
-        creds = base64.b64encode(
-            f"{self.session_token}:{self.session_token}".encode()
-        ).decode()
+        token = self.session_token or ""
+        creds = base64.b64encode(f"{token}:{token}".encode()).decode()
         headers = {"Authorization": f"Basic {creds}"}
+        # Sessions appear tied to the client that created them: QR logins
+        # (created with client-id NEXT) set this on the client, manual
+        # tokens opt in via NORDNET_CLIENT_ID.
         if self.client_id:
             headers["client-id"] = self.client_id
         return headers
@@ -49,11 +51,13 @@ class NordnetClient:
                         "to your environment and restart the server."
                     )
             raise SessionExpiredError(
-                "Session expired. Refresh your token:\n"
-                "1. Log into nordnet.se\n"
-                "2. Open DevTools → Application/Storage → Cookies\n"
-                "3. Select the Nordnet domain and find NNX_SESSION_ID\n"
-                "4. Copy that cookie value into NORDNET_SESSION_TOKEN"
+                "Session expired or not yet authenticated. Call the "
+                "`nordnet_auth` tool to log in via QR code — scan it "
+                "with the Nordnet mobile app and the session will be "
+                "established automatically, no manual token needed. "
+                "Alternatively, set a token by hand: log into nordnet.se, "
+                "open DevTools → Application/Storage → Cookies, find "
+                "NNX_SESSION_ID and copy its value into NORDNET_SESSION_TOKEN."
                 + client_id_hint
             )
         resp.raise_for_status()

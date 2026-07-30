@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="color-scheme" content="light dark">
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      height: 380px;
+      width: 320px;
+      box-sizing: border-box;
+      padding: 16px;
+    }
+    #qr {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 260px;
+      height: 260px;
+    }
+    #qr img {
+      width: 260px;
+      height: 260px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }
+    #status {
+      font-size: 14px;
+      color: light-dark(#444, #ccc);
+      text-align: center;
+    }
+    #status.signed { color: #1a9c4a; font-weight: 600; }
+    #status.error { color: #d33; }
+    #retry {
+      display: none;
+      font-size: 13px;
+      color: #2563eb;
+      cursor: pointer;
+      background: none;
+      border: none;
+      text-decoration: underline;
+      padding: 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="qr"></div>
+  <div id="status">Waiting for you to scan…</div>
+  <button id="retry">Show a new code</button>
+  <!-- Vendored MCP ext-apps SDK, spliced in by auth.py at load time (see
+       vendor/ext_apps_iife.js) - keeps the login view free of runtime
+       third-party CDN fetches. -->
+  <script>/*__VENDORED_EXT_APPS__*/</script>
+  <script type="module">
+    const { App } = window.MCPExtApps;
+
+    const app = new App({ name: "Nordnet Login", version: "1.0.0" });
+
+    const ROTATE_INTERVAL_MS = 100000; // matches the server's ORDER_TTL_SECONDS, so a code is
+    // never replaced while its underlying Nordnet order could still be approved
+    const MAX_CODES = 3; // 3 * 100s = 5 minutes total before giving up
+    const STALE_AFTER_MS = 100000; // matches ROTATE_INTERVAL_MS/ORDER_TTL_SECONDS
+
+    const qrDiv = document.getElementById("qr");
+    const statusEl = document.getElementById("status");
+    const retryBtn = document.getElementById("retry");
+
+    let pollTimer = null;
+    let rotateTimer = null;
+    let codesGenerated = 0;
+
+    function applyQr(content) {
+      const img = content?.find((c) => c.type === "image");
+      if (!img) return;
+      qrDiv.innerHTML = "";
+      qrDiv.style.display = "";
+      const el = document.createElement("img");
+      el.src = `data:${img.mimeType || "image/png"};base64,${img.data}`;
+      el.alt = "Nordnet login QR code";
+      qrDiv.appendChild(el);
+    }
+
+    function setStatus(text, cls) {
+      statusEl.textContent = text;
+      statusEl.className = cls || "";
+    }
+
+    function stopAll() {
+      clearInterval(pollTimer);
+      clearTimeout(rotateTimer);
+      pollTimer = null;
+      rotateTimer = null;
+    }
+
+    function showTimedOut() {
+      stopAll();
+      qrDiv.innerHTML = "";
+      qrDiv.style.display = "none";
+      setStatus("Login flow timed out.", "error");
+      retryBtn.style.display = "block";
+    }
+
+    async function generateCode() {
+      if (codesGenerated >= MAX_CODES) {
+        showTimedOut();
+        return;
+      }
+      clearTimeout(rotateTimer);
+      try {
+        const result = await app.callServerTool({ name: "nordnet_auth", arguments: {} });
+        // A rotation can come back with "already_authenticated" instead of
+        // a fresh QR - either a valid session already existed, or the user
+        // approved the outgoing code right before rotation and the server's
+        // last poll picked it up. Either way: done, not "keep scanning".
+        const textBlock = result.content?.find((c) => c.type === "text")?.text;
+        let parsed = null;
+        if (textBlock) {
+          try { parsed = JSON.parse(textBlock); } catch (e) { /* not JSON we recognize */ }
+        }
+        if (parsed?.status === "already_authenticated") {
+          showAlreadyAuthenticated();
+          return;
+        }
+        if (parsed?.status === "error") {
+          // e.g. the outgoing code was approved right before rotation but
+          // finishing the login failed - tell the user instead of showing
+          // another QR as if nothing happened.
+          stopAll();
+          setStatus(parsed.message || "Something went wrong.", "error");
+          retryBtn.style.display = "block";
+          return;
+        }
+        if (parsed?.status === "captured") {
+          // The outgoing code was scanned and the phone is mid-approval -
+          // keep waiting on that order instead of replacing it.
+          setStatus("Code scanned — confirm the login in the Nordnet app…");
+          rotateTimer = setTimeout(generateCode, ROTATE_INTERVAL_MS);
+          if (!pollTimer) pollTimer = setInterval(pollOnce, 2000);
+          return;
+        }
+        applyQr(result.content);
+        codesGenerated += 1;
+        setStatus(`Waiting for you to scan… (code ${codesGenerated} of ${MAX_CODES})`);
+        retryBtn.style.display = "none";
+        rotateTimer = setTimeout(generateCode, ROTATE_INTERVAL_MS);
+        if (!pollTimer) pollTimer = setInterval(pollOnce, 2000);
+      } catch (e) {
+        stopAll();
+        setStatus("Couldn't start login. Try again.", "error");
+        retryBtn.style.display = "block";
+      }
+    }
+
+    function showAlreadyAuthenticated() {
+      stopAll();
+      qrDiv.innerHTML = "";
+      qrDiv.style.display = "none";
+      retryBtn.style.display = "none";
+      setStatus("Already logged in.", "signed");
+    }
+
+    // Authoritative check, independent of whatever content a tool call
+    // handed us - a received QR image might be a stale replay of a past
+    // result (e.g. the host re-showing this app after the conversation was
+    // reopened) rather than a fresh one, so it's never trusted blindly.
+    async function checkAlreadyAuthenticated() {
+      try {
+        const result = await app.callServerTool({ name: "nordnet_login_poll", arguments: {} });
+        const text = result.content?.find((c) => c.type === "text")?.text;
+        const data = JSON.parse(text || "{}");
+        return data.status === "already_authenticated";
+      } catch (e) {
+        return false;
+      }
+    }
+
+    let pollInFlight = false;
+    async function pollOnce() {
+      // setInterval keeps firing even when a poll takes >2s (slow network,
+      // a rotation holding the server's order lock) - don't stack another
+      // request on top of one still in flight.
+      if (pollInFlight) return;
+      pollInFlight = true;
+      try {
+        await pollOnceInner();
+      } finally {
+        pollInFlight = false;
+      }
+    }
+
+    async function pollOnceInner() {
+      let data;
+      try {
+        const result = await app.callServerTool({ name: "nordnet_login_poll", arguments: {} });
+        const text = result.content?.find((c) => c.type === "text")?.text;
+        data = JSON.parse(text || "{}");
+      } catch (e) {
+        setStatus("Connection error while checking login status.", "error");
+        return;
+      }
+
+      if (data.status === "signed") {
+        stopAll();
+        qrDiv.innerHTML = "";
+        qrDiv.style.display = "none";
+        setStatus("Logged in — press Enter to continue", "signed");
+        try {
+          // sendMessage() adds this to the conversation as a user turn, but
+          // some hosts (observed: Claude Desktop) only pre-fill it in the
+          // composer for the user to review and send, rather than
+          // submitting it immediately - likely deliberate, since an app
+          // silently injecting text that gets acted on unseen would be a
+          // prompt-injection risk. Either way this saves retyping, even if
+          // it doesn't always save the one keypress. Deliberately neutral
+          // wording: if login was the whole ask (e.g. "log into Nordnet"),
+          // there's nothing left to "continue" - the model should just
+          // confirm success, not go hunting for a follow-up action.
+          await app.sendMessage({
+            role: "user",
+            content: [{ type: "text", text: "Nordnet login complete." }],
+          });
+        } catch (e) {
+          setStatus("Logged in — you can close this.", "signed");
+        }
+      } else if (data.status === "already_authenticated") {
+        // Not a fresh login - e.g. this view got re-mounted (chat reopened,
+        // server restarted) and found a session that was already valid.
+        // Show success quietly; no sendMessage(), since nothing actually
+        // happened just now for the conversation to react to.
+        showAlreadyAuthenticated();
+      } else if (data.status === "captured") {
+        // Scanned; the phone now drives the approval. Keep polling.
+        setStatus("Code scanned — confirm the login in the Nordnet app…");
+      } else if (data.status === "expired") {
+        // The code we're showing has died server-side before its own 100s
+        // rotation was due - replace it right away instead of waiting.
+        setStatus("Code expired — getting a new one…");
+        await generateCode();
+      } else if (data.status === "error") {
+        stopAll();
+        setStatus(data.message || "Something went wrong.", "error");
+        retryBtn.style.display = "block";
+      }
+      // "pending": keep waiting, nothing to update.
+    }
+
+    retryBtn.addEventListener("click", () => {
+      codesGenerated = 0;
+      generateCode();
+    });
+
+    app.ontoolresult = async ({ content }) => {
+      // nordnet_auth bundles a JSON meta text block right after the image:
+      // an {status: "already_authenticated"} when it skipped generating a
+      // QR entirely, or otherwise a {startedAtMs: ...} timestamp for the QR
+      // that *is* included - always the *first* text block, since a
+      // trailing ASCII-art rendering of the same QR (for hosts that don't
+      // render this view at all) comes after it. Either way, content here
+      // might be a *stale replay* of a past result (e.g. the host
+      // re-showing this app after the conversation was reopened long after
+      // the original request) rather than a fresh call, so never trust it
+      // blindly.
+      const textBlock = content?.find((c) => c.type === "text")?.text;
+      let parsed = null;
+      if (textBlock) {
+        try { parsed = JSON.parse(textBlock); } catch (e) { /* not JSON we recognize */ }
+      }
+
+      let already = parsed?.status === "already_authenticated";
+      if (!already) already = await checkAlreadyAuthenticated();
+
+      if (already) {
+        showAlreadyAuthenticated();
+        return;
+      }
+
+      // Not how long *this code* has been running, but how long ago the
+      // QR was actually generated - a stale replay looks "fresh" to a
+      // simple in-memory check otherwise, since it never made a live call.
+      if (typeof parsed?.startedAtMs === "number" && Date.now() - parsed.startedAtMs > STALE_AFTER_MS) {
+        showTimedOut();
+        return;
+      }
+
+      // Genuinely a fresh, not-yet-approved QR - show it and start the
+      // rotate/poll cycle.
+      applyQr(content);
+      codesGenerated = 1;
+      setStatus(`Waiting for you to scan… (code 1 of ${MAX_CODES})`);
+      retryBtn.style.display = "none";
+      clearTimeout(rotateTimer);
+      rotateTimer = setTimeout(generateCode, ROTATE_INTERVAL_MS);
+      if (!pollTimer) pollTimer = setInterval(pollOnce, 2000);
+    };
+
+    function handleHostContextChanged(ctx) {
+      if (ctx.safeAreaInsets) {
+        document.body.style.paddingTop = `${ctx.safeAreaInsets.top}px`;
+        document.body.style.paddingRight = `${ctx.safeAreaInsets.right}px`;
+        document.body.style.paddingBottom = `${ctx.safeAreaInsets.bottom}px`;
+        document.body.style.paddingLeft = `${ctx.safeAreaInsets.left}px`;
+      }
+    }
+    app.onhostcontextchanged = handleHostContextChanged;
+
+    await app.connect();
+    const ctx = app.getHostContext();
+    if (ctx) handleHostContextChanged(ctx);
+  </script>
+</body>
+</html>

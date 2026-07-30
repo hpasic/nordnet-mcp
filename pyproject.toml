@@ -23,6 +23,7 @@ dependencies = [
     "mcp>=1.28.1,<2",
     "httpx>=0.28.0",
     "python-dotenv>=1.2.2",
+    "qrcode[pil]>=8.0",
 ]
 
 [project.urls]
@@ -32,6 +33,10 @@ Issues = "https://github.com/hpasic/nordnet-mcp/issues"
 
 [project.scripts]
 nordnet-mcp = "nordnet_mcp:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nordnet_mcp"]
+artifacts = ["src/nordnet_mcp/*.html", "src/nordnet_mcp/vendor/*.js"]
 
 [dependency-groups]
 dev = [

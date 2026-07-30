@@ -67,8 +67,7 @@ async def test_get_401_raises_session_expired(client):
 
     message = str(exc_info.value)
     assert "Session expired" in message
-    assert "Application/Storage → Cookies" in message
-    assert "NNX_SESSION_ID" in message
+    assert "nordnet_auth" in message
 
 
 @respx.mock
