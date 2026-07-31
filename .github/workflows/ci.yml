@@ -72,11 +72,11 @@ jobs:
 
       - name: Validate and pack extension
         run: |
-          npx -y @anthropic-ai/mcpb validate .
-          npx -y @anthropic-ai/mcpb pack . nordnet-mcp.mcpb
+          npx -y @anthropic-ai/mcpb@2.1.2 validate .
+          npx -y @anthropic-ai/mcpb@2.1.2 pack . nordnet-mcp.mcpb
 
       - name: Publish latest release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: latest
           name: Latest build
