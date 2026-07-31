@@ -63,6 +63,7 @@ If you'd rather not use QR login, you can still provide a session token manually
 - Supports Nordnet Sweden, Norway, Denmark, and Finland hosts
 - Environment-variable based setup
 - Packaged as a Python CLI entrypoint: `nordnet-mcp`
+- One-click [Claude Desktop Extension](#claude-desktop-extension-easiest--no-technical-setup) for non-technical users
 
 ## Quickstart
 
@@ -193,6 +194,26 @@ If you'd rather not rely on the QR flow, you can provide a session token yoursel
    `env` block).
 7. It will usually look like a UUID-style value such as `7f3a91c2-5648-4dbe-8a17-29c4e6b1f053`.
 
+## Claude Desktop Extension (easiest — no technical setup)
+
+If you just use Claude Desktop and aren't comfortable with terminals, config files,
+or Docker, this is the option for you: a one-click install, no separate software of
+any kind.
+
+1. Download `nordnet-mcp.mcpb` from the [Releases page](https://github.com/hpasic/nordnet-mcp/releases).
+2. Open Claude Desktop → Settings → Extensions, and drag the downloaded file in (or
+   double-click it, depending on your OS).
+3. Click **Install**. You'll be asked which Nordnet market you're on — pick your
+   country and confirm.
+4. Ask Claude about your Nordnet account. It'll show you a QR code the first time;
+   scan it with the Nordnet mobile app to finish signing in.
+
+That's it — no Python, no `uv`, no Docker. Claude Desktop runs the server itself
+using its own built-in Python/[uv](https://docs.astral.sh/uv/) runtime
+([`manifest.json`](manifest.json) declares this), the same way it runs any other
+extension. For Claude Code or other MCP-capable agents, see [MCP client
+setup](#mcp-client-setup) above instead.
+
 ## Available tools
 
 ### Accounts
@@ -227,6 +248,24 @@ uv sync --group dev
 uv run pytest -q
 uv build
 ```
+
+### Publishing the Desktop Extension
+
+CI validates and packs `nordnet-mcp.mcpb` and publishes it to the `latest` GitHub
+Release on every push to `main` — the same "always-current" pattern as the `:latest`
+Docker tag, not a versioned per-release artifact. No manual step needed; the
+[Claude Desktop Extension](#claude-desktop-extension-easiest--no-technical-setup)
+download link always points at that release's asset.
+
+To do it locally (e.g. to sanity-check a change before pushing):
+
+```bash
+npx @anthropic-ai/mcpb validate .
+npx @anthropic-ai/mcpb pack . nordnet-mcp.mcpb
+```
+
+`.mcpbignore` keeps the bundle to just what the `uv` runtime needs (`manifest.json`,
+`pyproject.toml`, `src/`, `server/`) — it's not the whole repo.
 
 ## Security notes
 
