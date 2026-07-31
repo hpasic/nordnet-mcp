@@ -192,7 +192,6 @@ If you'd rather not rely on the QR flow, you can provide a session token yoursel
 6. Copy its value and set it as `NORDNET_SESSION_TOKEN` in `.env` (or the MCP client's
    `env` block).
 7. It will usually look like a UUID-style value such as `7f3a91c2-5648-4dbe-8a17-29c4e6b1f053`.
->>>>>>> fdd1965 (feat: login via QR code)
 
 ## Available tools
 
