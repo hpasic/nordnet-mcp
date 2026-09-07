@@ -1,0 +1,71 @@
+{
+  "manifest_version": "0.4",
+  "name": "nordnet-mcp",
+  "display_name": "Nordnet Portfolio",
+  "version": "0.1.0",
+  "description": "Read-only access to your Nordnet brokerage account — accounts, positions, trades, balances, orders, and instrument lookup.",
+  "long_description": "Connects Claude to your Nordnet account (Sweden, Norway, Denmark, or Finland) for read-only portfolio data. No trades are ever placed and no money ever moves — it only reads accounts, positions, trades, balances, orders, and instrument/stock data. Sign-in happens through a QR code you scan with the Nordnet mobile app; no password or API key is ever typed into Claude. Runs entirely through Claude Desktop's built-in UV runtime, so nothing extra needs to be installed.",
+  "author": {
+    "name": "Haris Pasic"
+  },
+  "homepage": "https://github.com/hpasic/nordnet-mcp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hpasic/nordnet-mcp"
+  },
+  "license": "MIT",
+  "keywords": ["nordnet", "portfolio", "investing", "finance", "brokerage"],
+  "server": {
+    "type": "uv",
+    "entry_point": "server/main.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": ["run", "--directory", "${__dirname}", "server/main.py"],
+      "env": {
+        "NORDNET_HOST": "${user_config.nordnet_host}",
+        "NORDNET_CLIENT_ID": "${user_config.nordnet_client_id}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "list_accounts", "description": "List all Nordnet accounts with IDs and types" },
+    { "name": "get_account_info", "description": "Get account balances, buying power, and interest rates" },
+    { "name": "get_positions", "description": "Get all holdings/positions for an account" },
+    { "name": "get_trades", "description": "Get executed trades for an account" },
+    { "name": "get_ledgers", "description": "Get currency ledger balances for an account" },
+    { "name": "get_orders", "description": "Get active orders for an account" },
+    { "name": "get_daily_transactions", "description": "Get today's transactions for an account" },
+    { "name": "get_instrument", "description": "Get instrument details" },
+    { "name": "lookup_instrument", "description": "Find an instrument by ISIN or market ID" },
+    { "name": "search_stocks", "description": "Search Nordnet's stock database with free text" },
+    { "name": "check_suitability", "description": "Check if an instrument is tradeable for your account" },
+    { "name": "get_countries", "description": "Get list of countries available on Nordnet" },
+    { "name": "get_instrument_types", "description": "Get all available instrument types" },
+    { "name": "get_search_attributes", "description": "Get available search filter attributes" },
+    { "name": "nordnet_auth", "description": "Start (or restart) Nordnet login via QR code" },
+    { "name": "nordnet_login_poll", "description": "Check a pending Nordnet login and finish it once approved" }
+  ],
+  "user_config": {
+    "nordnet_host": {
+      "type": "string",
+      "title": "Nordnet market",
+      "description": "Must match the market your Nordnet mobile app is registered in: public.nordnet.se (Sweden), public.nordnet.no (Norway), public.nordnet.dk (Denmark), or public.nordnet.fi (Finland).",
+      "default": "public.nordnet.se",
+      "required": true
+    },
+    "nordnet_client_id": {
+      "type": "string",
+      "title": "Client ID override (optional)",
+      "description": "Leave empty. Only set this to NEXT if Nordnet responds with a NEXT_INVALID_SESSION error after installing.",
+      "default": "",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "python": ">=3.12"
+    }
+  }
+}
