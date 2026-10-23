@@ -1,0 +1,37 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.hpasic/nordnet-mcp",
+  "title": "Nordnet Portfolio",
+  "description": "Read-only Nordnet brokerage data: accounts, positions, trades, balances, orders, instruments.",
+  "repository": {
+    "url": "https://github.com/hpasic/nordnet-mcp",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/hpasic/nordnet-mcp:latest",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "NORDNET_HOST",
+          "description": "Nordnet API host for your market, e.g. public.nordnet.se, public.nordnet.no, public.nordnet.dk, public.nordnet.fi",
+          "isRequired": true,
+          "default": "public.nordnet.se"
+        },
+        {
+          "name": "NORDNET_SESSION_TOKEN",
+          "description": "Optional session token; omit to sign in via QR code with the nordnet_auth tool",
+          "isSecret": true
+        },
+        {
+          "name": "NORDNET_CLIENT_ID",
+          "description": "Optional; set to NEXT if Nordnet returns NEXT_INVALID_SESSION"
+        }
+      ]
+    }
+  ]
+}
